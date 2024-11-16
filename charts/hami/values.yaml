@@ -59,7 +59,7 @@ scheduler:
     # @param enabled indicate whether to run kube-scheduler container in the scheduler pod, it's true by default.
     enabled: true
     image: registry.cn-hangzhou.aliyuncs.com/google_containers/kube-scheduler
-    tag: ""
+    imageTag: ""
     imagePullPolicy: IfNotPresent
     extraNewArgs:
       - --config=/config/config.yaml

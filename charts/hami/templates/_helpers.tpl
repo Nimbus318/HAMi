@@ -89,8 +89,8 @@ imagePullSecrets: {{ toYaml .Values.imagePullSecrets | nindent 2 }}
     Resolve the tag for kubeScheduler.
 */}}
 {{- define "resolvedKubeSchedulerTag" -}}
-{{- if .Values.scheduler.kubeScheduler.tag }}
-{{- .Values.scheduler.kubeScheduler.tag | trim -}}
+{{- if .Values.scheduler.kubeScheduler.imageTag }}
+{{- .Values.scheduler.kubeScheduler.imageTag | trim -}}
 {{- else }}
 {{- include "strippedKubeVersion" . | trim -}}
 {{- end }}
