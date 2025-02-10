@@ -99,6 +99,16 @@ type NvidiaDevicePlugin struct {
 	stop   chan interface{}
 }
 
+// InitDeviceFilter initializes nvidia.DevicePluginFilterDevice from config file
+func InitDeviceFilter() error {
+	sConfig := &nvidia.NvidiaConfig{}
+	_, err := readFromConfigFile(sConfig)
+	if err != nil {
+		return fmt.Errorf("failed to initialize device filter: %v", err)
+	}
+	return nil
+}
+
 func readFromConfigFile(sConfig *nvidia.NvidiaConfig) (string, error) {
 	jsonbyte, err := os.ReadFile("/config/config.json")
 	mode := "hami-core"
