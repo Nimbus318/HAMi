@@ -323,9 +323,17 @@ func (s *Scheduler) getNodesUsage(nodes *[]string, task *corev1.Pod) (*map[strin
 									d.Device.Health = false
 									continue
 								}
-								tmpIdx, Instance, _ := util.ExtractMigTemplatesFromUUID(udevice.UUID)
+								tmpIdx, Instance, err := util.ExtractMigTemplatesFromUUID(udevice.UUID)
+								if err != nil {
+									klog.ErrorS(err, "Failed to extract MIG templates from UUID", "UUID", udevice.UUID)
+									continue
+								}
 								if len(d.Device.MigUsage.UsageList) == 0 {
 									util.PlatternMIG(&d.Device.MigUsage, d.Device.MigTemplate, tmpIdx)
+								}
+								if Instance < 0 || Instance >= len(d.Device.MigUsage.UsageList) {
+									klog.ErrorS(nil, "MIG instance index out of bounds", "instance", Instance, "listLength", len(d.Device.MigUsage.UsageList), "UUID", udevice.UUID)
+									continue
 								}
 								d.Device.MigUsage.UsageList[Instance].InUse = true
 								klog.V(5).Infoln("add mig usage", d.Device.MigUsage, "template=", d.Device.MigTemplate, "uuid=", d.Device.ID)
@@ -359,7 +367,8 @@ func (s *Scheduler) getPodUsage() (map[string]PodUseDeviceStat, error) {
 		return nil, err
 	}
 	for _, pod := range pods {
-		if pod.Status.Phase != corev1.PodSucceeded {
+		// Only process running pods for usage statistics
+		if pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
 		podUseDeviceNum := 0
