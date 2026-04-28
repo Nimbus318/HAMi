@@ -12,10 +12,12 @@ on:
 
 jobs:
   e2e:
+    # The self-hosted runner pool exists in Project-HAMi/HAMi, not in forks.
+    # Without this guard, fork pushes sit queued forever waiting for a runner.
+    if: github.repository == 'Project-HAMi/HAMi'
     runs-on: self-hosted
     steps:
       - name: e2e test
         # https://github.com/actions/virtual-environments/issues/709
         run: |
           echo "Need to add e2e test"
-
