@@ -1,0 +1,226 @@
+name: Mock GPU E2E
+
+# This workflow exercises HAMi without physical GPUs by combining mock NVML
+# from NVIDIA/k8s-test-infra with KWOK virtual nodes from fake-gpu-operator.
+# It complements the real-GPU self-hosted E2E by providing a lightweight path
+# for scheduler, device plugin allocation, HAMi-core preload, profile-matrix,
+# and scheduler-scale coverage.
+#
+# See hack/mock-e2e/README.md for design + budget.
+
+on:
+  push:
+    # master gets the full battery; ci/** experiment branches get smoke only.
+    branches: [master, 'ci/**']
+    paths-ignore:
+      - 'docs/**'
+      - 'examples/**'
+      - '**/*.md'
+  pull_request:
+    branches: [master]
+    # PRs get smoke only unless a maintainer starts a manual full run.
+    paths-ignore:
+      - 'docs/**'
+      - 'examples/**'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      run_full:
+        description: "Also run GPU profile matrix + KWOK scheduler-scale jobs?"
+        type: boolean
+        default: true
+      run_ginkgo:
+        description: "Run upstream ginkgo overcommit spec as a slow, non-fatal diagnostic?"
+        type: boolean
+        default: false
+      kwok_node_count:
+        description: "KWOK fake nodes for the scale job (1-50)"
+        default: "10"
+  schedule:
+    # Weekly Monday 03:00 UTC — catches upstream chart drift
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mock-gpu-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned per mock-gpu-ci-demo design notes (docs/e2e-design-notes.md).
+  # K8s version is part of the test contract; both semver and digest are pinned.
+  KIND_VERSION: v0.31.0
+  KIND_NODE_IMAGE: kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+  K8S_TEST_INFRA_REF: main
+  HAMI_IMAGE_REPO: hami-mock-e2e
+  HAMI_IMAGE_REGISTRY: ""
+  HAMI_IMAGE_TAG: ${{ github.sha }}
+  HAMI_IMAGE_PULL: "false"
+
+jobs:
+  # ============================================================
+  # Smoke — single h100 profile, HAMi nvidia DP backed by mock NVML.
+  # Always runs.
+  # ============================================================
+  smoke:
+    name: Mock NVML smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GPU_PROFILE: h100
+      GPU_COUNT: "8"
+      KIND_CLUSTER_NAME: hami-mock-e2e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: NVIDIA/k8s-test-infra
+          path: _k8s-test-infra
+          ref: ${{ env.K8S_TEST_INFRA_REF }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build HAMi image from checkout
+        run: bash hack/mock-e2e/build-hami-image.sh
+      - name: Install kind
+        run: bash hack/mock-e2e/install-kind.sh
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Create kind cluster
+        run: bash hack/mock-e2e/setup-cluster.sh
+      - name: Install nvml-mock
+        run: bash hack/mock-e2e/install-nvml-mock.sh
+      - name: Install HAMi (DP backed by mock NVML)
+        run: bash hack/mock-e2e/install-hami-on-mock.sh
+      - name: Verify smoke chain
+        run: bash hack/mock-e2e/verify-smoke.sh
+      - name: Verify scheduler allocation chain
+        run: bash hack/mock-e2e/verify-scheduler.sh
+      - name: Verify in-pod nvidia-smi
+        run: bash hack/mock-e2e/verify-nvidia-smi.sh
+      # The upstream ginkgo overcommit spec is written for the self-hosted GPU
+      # E2E shape and creates pods in hami-system, which the HAMi webhook
+      # excludes. Keep it manual-only as a diagnostic; verify-scheduler.sh is
+      # the gating check for webhook -> scheduler -> DP Allocate.
+      - name: Run upstream ginkgo e2e (manual diagnostic, non-fatal)
+        if: github.event_name == 'workflow_dispatch' && inputs.run_ginkgo == true
+        continue-on-error: true
+        run: bash hack/mock-e2e/run-ginkgo.sh
+      - name: Debug on failure
+        if: failure()
+        run: bash hack/mock-e2e/collect-debug.sh smoke
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: smoke-debug-${{ github.run_id }}
+          path: /tmp/debug/
+          retention-days: 7
+
+  # ============================================================
+  # Matrix — same smoke flow against 3 GPU profiles in parallel.
+  # ============================================================
+  matrix:
+    name: GPU profile matrix
+    needs: smoke
+    if: |
+      (github.event_name == 'workflow_dispatch' && inputs.run_full == true) ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [a100, gb200, l40s]
+    env:
+      GPU_PROFILE: ${{ matrix.profile }}
+      GPU_COUNT: "8"
+      KIND_CLUSTER_NAME: hami-mock-${{ matrix.profile }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: NVIDIA/k8s-test-infra
+          path: _k8s-test-infra
+          ref: ${{ env.K8S_TEST_INFRA_REF }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build HAMi image from checkout
+        run: bash hack/mock-e2e/build-hami-image.sh
+      - name: Install kind
+        run: bash hack/mock-e2e/install-kind.sh
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - run: bash hack/mock-e2e/setup-cluster.sh
+      - run: bash hack/mock-e2e/install-nvml-mock.sh
+      - run: bash hack/mock-e2e/install-hami-on-mock.sh
+      - run: bash hack/mock-e2e/verify-smoke.sh
+      - run: bash hack/mock-e2e/verify-scheduler.sh
+      - run: bash hack/mock-e2e/verify-nvidia-smi.sh
+      - name: Run upstream ginkgo e2e (manual diagnostic, non-fatal)
+        if: github.event_name == 'workflow_dispatch' && inputs.run_ginkgo == true
+        continue-on-error: true
+        run: bash hack/mock-e2e/run-ginkgo.sh
+      - if: failure()
+        env:
+          DEBUG_DIR: /tmp/debug-${{ matrix.profile }}
+        run: bash hack/mock-e2e/collect-debug.sh matrix-${{ matrix.profile }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: matrix-${{ matrix.profile }}-debug-${{ github.run_id }}
+          path: /tmp/debug-${{ matrix.profile }}/
+
+  # ============================================================
+  # Scale — HAMi scheduler against FGO + KWOK fleet.
+  # No HAMi DP: FGO advertises GPU on KWOK nodes, and install-kwok.sh writes
+  # the minimal HAMi node-device annotation normally produced by the DP.
+  # ============================================================
+  scale:
+    name: KWOK scheduler scale
+    needs: smoke
+    if: |
+      (github.event_name == 'workflow_dispatch' && inputs.run_full == true) ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GPU_PROFILE: h100
+      GPU_COUNT: "8"
+      KIND_CLUSTER_NAME: hami-mock-scale
+      KWOK_NODE_COUNT: ${{ github.event.inputs.kwok_node_count || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build HAMi image from checkout
+        run: bash hack/mock-e2e/build-hami-image.sh
+      - name: Install kind
+        run: bash hack/mock-e2e/install-kind.sh
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - run: bash hack/mock-e2e/setup-cluster.sh
+      - run: bash hack/mock-e2e/install-fgo.sh
+      - run: bash hack/mock-e2e/install-kwok.sh
+      - run: bash hack/mock-e2e/install-hami-scheduler-only.sh
+      - run: bash hack/mock-e2e/verify-scale.sh
+      - if: failure()
+        run: bash hack/mock-e2e/collect-debug.sh scale
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: scale-debug-${{ github.run_id }}
+          path: /tmp/debug/
